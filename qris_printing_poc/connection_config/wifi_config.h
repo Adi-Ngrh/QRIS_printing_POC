@@ -2,8 +2,8 @@
 
 #include <stdbool.h>
 
-/* STEP 1: open the UART port that the Wi-Fi module is wired to. */
+/* STEP 1: bring up NVS + the network stack + the WiFi driver, station mode. */
 void wifi_config_init(void);
 
-/* STEP 3: run the connection sequence (AT test, station mode, join AP). */
+/* STEP 2-3: connect to the configured AP and block until connected/failed. */
 bool wifi_config_connect(void);

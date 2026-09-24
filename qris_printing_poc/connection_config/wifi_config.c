@@ -1,77 +1,99 @@
-#include <string.h>
-#include "driver/uart.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/event_groups.h"
+#include "esp_wifi.h"
+#include "esp_event.h"
 #include "esp_log.h"
+#include "nvs_flash.h"
 #include "wifi_config.h"
 
-/*
- * GOAL: connect to a Wi-Fi access point using AT commands sent over UART,
- * the same way an MCU with no built-in radio (e.g. NXP + FC41D) would.
- * Nothing else is handled here (no data send/receive, no reconnection logic).
- */
+/* GOAL: connect to a WiFi AP using the ESP32's own onboard radio. */
 
-#define AT_UART_PORT     UART_NUM_1
-#define AT_UART_TX_PIN   17
-#define AT_UART_RX_PIN   16
-#define AT_UART_BAUD     115200
-#define AT_BUF_SIZE      512
+#define WIFI_SSID       "punya orang"
+#define WIFI_PASS       "b57aigqs"
+#define WIFI_MAX_RETRY  5
 
-#define WIFI_SSID   "your-ssid"
-#define WIFI_PASS   "your-password"
+static const char *TAG = "wifi_config";
 
-static const char *TAG = "wifi_at";
+static EventGroupHandle_t s_wifi_event_group;
+#define WIFI_CONNECTED_BIT BIT0
+#define WIFI_FAIL_BIT      BIT1
 
-/* STEP 1: open the UART port that the Wi-Fi module is wired to. */
+static int s_retry_count = 0;
+
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                                int32_t event_id, void *event_data);
+
+/* STEP 1: bring up NVS, the network stack, and the WiFi driver (station mode). */
 void wifi_config_init(void)
 {
-    uart_config_t cfg = {
-        .baud_rate = AT_UART_BAUD,
-        .data_bits = UART_DATA_8_BITS,
-        .parity    = UART_PARITY_DISABLE,
-        .stop_bits = UART_STOP_BITS_1,
-        .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
-    };
-    uart_param_config(AT_UART_PORT, &cfg);
-    uart_set_pin(AT_UART_PORT, AT_UART_TX_PIN, AT_UART_RX_PIN, UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
-    uart_driver_install(AT_UART_PORT, AT_BUF_SIZE * 2, 0, 0, NULL, 0);
-}
-
-/*
- * STEP 2: send one AT command and wait for the module's reply.
- * Every AT exchange follows this same request/response shape, so this
- * helper is reused for each command in the connection flow below.
- */
-static bool at_send_cmd(const char *cmd, uint32_t timeout_ms)
-{
-    uint8_t rx[AT_BUF_SIZE] = {0};
-
-    uart_write_bytes(AT_UART_PORT, cmd, strlen(cmd));
-    uart_write_bytes(AT_UART_PORT, "\r\n", 2);
-
-    int len = uart_read_bytes(AT_UART_PORT, rx, sizeof(rx) - 1, pdMS_TO_TICKS(timeout_ms));
-    if (len <= 0) {
-        ESP_LOGE(TAG, "no response to: %s", cmd);
-        return false;
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
     }
+    ESP_ERROR_CHECK(ret);
 
-    rx[len] = '\0';
-    ESP_LOGI(TAG, "resp: %s", rx);
-    return strstr((char *)rx, "OK") != NULL;
+    s_wifi_event_group = xEventGroupCreate();
+
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+
+    esp_event_handler_instance_t instance_any_id;
+    esp_event_handler_instance_t instance_got_ip;
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                          &wifi_event_handler, NULL, &instance_any_id));
+    ESP_ERROR_CHECK(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                          &wifi_event_handler, NULL, &instance_got_ip));
+
+    wifi_config_t wifi_config = {
+        .sta = {
+            .ssid = WIFI_SSID,
+            .password = WIFI_PASS,
+            .threshold.authmode = WIFI_AUTH_WPA2_PSK,
+        },
+    };
+
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &wifi_config));
 }
 
-/* STEP 3: run the actual connection sequence, one AT command per stage. */
+/* STEP 2: react to WiFi/IP events (connect, retry, report success). */
+static void wifi_event_handler(void *arg, esp_event_base_t event_base,
+                                int32_t event_id, void *event_data)
+{
+    if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_START) {
+        esp_wifi_connect();
+    } else if (event_base == WIFI_EVENT && event_id == WIFI_EVENT_STA_DISCONNECTED) {
+        if (s_retry_count < WIFI_MAX_RETRY) {
+            esp_wifi_connect();
+            s_retry_count++;
+            ESP_LOGI(TAG, "retrying connection to AP (%d/%d)", s_retry_count, WIFI_MAX_RETRY);
+        } else {
+            xEventGroupSetBits(s_wifi_event_group, WIFI_FAIL_BIT);
+        }
+        ESP_LOGI(TAG, "disconnected from AP");
+    } else if (event_base == IP_EVENT && event_id == IP_EVENT_STA_GOT_IP) {
+        ip_event_got_ip_t *event = (ip_event_got_ip_t *) event_data;
+        ESP_LOGI(TAG, "got ip:" IPSTR, IP2STR(&event->ip_info.ip));
+        s_retry_count = 0;
+        xEventGroupSetBits(s_wifi_event_group, WIFI_CONNECTED_BIT);
+    }
+}
+
+/* STEP 3: start the driver and block until connected or out of retries. */
 bool wifi_config_connect(void)
 {
-    char cmd[128];
+    ESP_ERROR_CHECK(esp_wifi_start());
 
-    /* check the module powered up and respond status. */
-    if (!at_send_cmd("AT", 1000)) return false;
+    ESP_LOGI(TAG, "connecting to SSID:%s", WIFI_SSID);
 
-    /* put the module into station mode (client joining an AP). */
-    if (!at_send_cmd("AT+CWMODE=1", 1000)) return false;
+    EventBits_t bits = xEventGroupWaitBits(s_wifi_event_group,
+                                            WIFI_CONNECTED_BIT | WIFI_FAIL_BIT,
+                                            pdFALSE, pdFALSE, portMAX_DELAY);
 
-    /* join the target AP with SSID/password. This is the slow step. */
-    snprintf(cmd, sizeof(cmd), "AT+CWJAP=\"%s\",\"%s\"", WIFI_SSID, WIFI_PASS);
-    if (!at_send_cmd(cmd, 10000)) return false;
-
-    return true;
+    return (bits & WIFI_CONNECTED_BIT) != 0;
 }
