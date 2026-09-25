@@ -25,7 +25,7 @@ static char s_notif_topic[32];
 * @param len : size of payload
 * @param out : the output (parsed)
 */
-static void parse_payment_payload(const char *json, int len, printer_receipt_t *out, char *qr_content, size_t qr_content_size)
+static void parse_payment_payload(const char *json, int len, printer_receipt_t *out, char *qr_content, size_t qr_content_size, int *print_mode)
 {
     static char amount[32], invoice_number[64], paid_at[32], serial[32], status[16];
 
@@ -37,6 +37,7 @@ static void parse_payment_payload(const char *json, int len, printer_receipt_t *
     snprintf(serial, sizeof(serial), "%s", cJSON_GetObjectItem(root, "serial")->valuestring);
     snprintf(status, sizeof(status), "%s", cJSON_GetObjectItem(root, "status")->valuestring);
     snprintf(qr_content, qr_content_size, "%s", cJSON_GetObjectItem(root, "qr_content")->valuestring);
+    *print_mode = cJSON_GetObjectItem(root, "print_mode")->valueint;
 
     cJSON_Delete(root);
 
@@ -71,10 +72,16 @@ static void mqtt_event_handler(void *arg, esp_event_base_t event_base, int32_t e
         ESP_LOGI(TAG, "message on %.*s: %.*s", event->topic_len, event->topic, event->data_len, event->data);
         printer_receipt_t receipt;
         char qris[300];
-        parse_payment_payload(event->data, event->data_len, &receipt, qris, sizeof(qris));
-        //printer_print_raw((const uint8_t *)event->data, event->data_len);
-        //printer_print_receipt(&receipt);
-        printer_print_qris(qris);
+        int print_mode;
+        parse_payment_payload(event->data, event->data_len, &receipt, qris, sizeof(qris), &print_mode);
+
+        if (print_mode == 0) {
+            printer_print_receipt(&receipt);
+        } else if (print_mode == 1) {
+            printer_print_qris(qris);
+        } else {
+            printer_print_raw((const uint8_t *)event->data, event->data_len);
+        }
         break;
 
     case MQTT_EVENT_DISCONNECTED:

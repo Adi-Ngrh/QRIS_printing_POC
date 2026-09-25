@@ -1,7 +1,5 @@
 """
-Same as send_payment_notif.py, except qr_content comes from a real call to
-QoT's /qr-generate endpoint instead of a locally-fabricated fake string.
-Requires qot-staging.eloku.com to actually be reachable.
+real payload (run with --mode flag to switch between 3 print modes, receipt(0), qris(1), raw(2))
 """
 
 import argparse
@@ -57,7 +55,7 @@ def generate_qr(imei, secret, total_amount):
     return resp.json()["qr"]
 
 
-def build_payload(amount):
+def build_payload(amount, mode):
     device = register_device(DEVICE_IMEI)
     qr = generate_qr(DEVICE_IMEI, device["secret"], amount)
 
@@ -68,16 +66,18 @@ def build_payload(amount):
         "serial": random_serial(),
         "status": "pending",
         "qr_content": qr["qr_content"],
+        "print_mode": mode,
     }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--amount", type=float, default=250000.00)
+    parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=2, help="0=raw, 1=receipt, 2=qris")
     args = parser.parse_args()
 
     topic = f"topic-notif-{DEVICE_IMEI}"
-    payload = build_payload(args.amount)
+    payload = build_payload(args.amount, args.mode)
 
     publish.single(topic, json.dumps(payload), hostname=BROKER_HOST, port=BROKER_PORT)
     print(f"published to {topic}: {payload}")

@@ -6,14 +6,20 @@
 #define ESCPRESSO_HOST "10.170.161.230"
 #define ESCPRESSO_PORT 9100
 
-static const uint8_t CMD_INIT[]         = { 0x1B, 0x40 };
-static const uint8_t CMD_ALIGN_CENTER[] = { 0x1B, 0x61, 0x01 };
-static const uint8_t CMD_ALIGN_LEFT[]   = { 0x1B, 0x61, 0x00 };
-static const uint8_t CMD_BOLD_ON[]      = { 0x1B, 0x45, 0x01 };
-static const uint8_t CMD_BOLD_OFF[]     = { 0x1B, 0x45, 0x00 };
-static const uint8_t CMD_FEED_CUT[]     = { 0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00 };
+// ESC @ : initialize printer
+static const uint8_t CMD_INIT[]         = { 0x1B, 0x40 };    
+// ESC a 1 : center alignment                     
+static const uint8_t CMD_ALIGN_CENTER[] = { 0x1B, 0x61, 0x01 };    
+// ESC a 0 : left alignment               
+static const uint8_t CMD_ALIGN_LEFT[]   = { 0x1B, 0x61, 0x00 };  
+// ESC E 1 : bold on
+static const uint8_t CMD_BOLD_ON[]      = { 0x1B, 0x45, 0x01 };        
+// ESC E 0 : bold off
+static const uint8_t CMD_BOLD_OFF[]     = { 0x1B, 0x45, 0x00 };     
+// LF x3 + GS V B 0 : feed lines and partial cut              
+static const uint8_t CMD_FEED_CUT[]     = { 0x0A, 0x0A, 0x0A, 0x1D, 0x56, 0x42, 0x00 }; 
 
-static int s_sock = -1;
+static int s_sock;
 
 static void printer_connect(void)
 {
@@ -27,6 +33,11 @@ static void printer_connect(void)
     connect(s_sock, (struct sockaddr *)&addr, sizeof(addr));
 }
 
+/*
+* @brief send data to printer
+*
+* use lwip TCP/IP stack
+*/
 static void printer_send(const uint8_t *data, size_t len)
 {
     send(s_sock, data, len, 0);
@@ -42,6 +53,9 @@ void printer_forward_init(void)
     printer_connect();
 }
 
+/*
+* @brief print raw payload
+*/
 void printer_print_raw(const uint8_t *data, size_t len)
 {
     printer_send(CMD_INIT, sizeof(CMD_INIT));
@@ -49,6 +63,11 @@ void printer_print_raw(const uint8_t *data, size_t len)
     printer_send_str("\n");
 }
 
+/*
+* @brief print formatted payload
+*
+* @param receipt : raw payload
+*/
 void printer_print_receipt(const printer_receipt_t *receipt)
 {
     char line[64];
@@ -79,6 +98,11 @@ void printer_print_receipt(const printer_receipt_t *receipt)
     printer_send(CMD_FEED_CUT, sizeof(CMD_FEED_CUT));
 }
 
+/*
+* @brief generate and print QR
+*
+* @param qr_content : QR string
+*/
 void printer_print_qris(const char *qr_content)
 {
     size_t data_len = strlen(qr_content);
@@ -86,11 +110,17 @@ void printer_print_qris(const char *qr_content)
     uint8_t pL = store_len & 0xFF;
     uint8_t pH = (store_len >> 8) & 0xFF;
 
-    uint8_t cmd_model[]     = { 0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00 };
-    uint8_t cmd_size[]      = { 0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x06 };
-    uint8_t cmd_ec_level[]  = { 0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31 };
-    uint8_t cmd_store_hdr[] = { 0x1D, 0x28, 0x6B, pL, pH, 0x31, 0x50, 0x30 };
-    uint8_t cmd_print[]     = { 0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30 };
+    // GS ( k pL pH cn fn [parameters]
+    // select QR model 2
+    uint8_t cmd_model[]     = { 0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00 }; 
+    // set QR module size
+    uint8_t cmd_size[]      = { 0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, 0x06 };       
+    // set QR error-correction level
+    uint8_t cmd_ec_level[]  = { 0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31 };  
+    // store QR data (header, data bytes follow)     
+    uint8_t cmd_store_hdr[] = { 0x1D, 0x28, 0x6B, pL, pH, 0x31, 0x50, 0x30 };  
+    // print the stored QR data         
+    uint8_t cmd_print[]     = { 0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30 };       
 
     printer_send(CMD_INIT, sizeof(CMD_INIT));
     printer_send(CMD_ALIGN_CENTER, sizeof(CMD_ALIGN_CENTER));

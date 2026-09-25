@@ -1,3 +1,7 @@
+"""
+fake payload (run with --mode flag to switch between 3 print modes, receipt(0), qris(1), raw(2))
+"""
+
 import argparse
 import json
 import random
@@ -52,7 +56,7 @@ def build_fake_qris(amount, invoice_number):
     return payload + f"{crc16_ccitt(payload):04X}"
 
 
-def build_payload(amount):
+def build_payload(amount, mode):
     amount_str = f"{amount:.2f}"
     invoice_number = random_invoice_number()
 
@@ -63,16 +67,18 @@ def build_payload(amount):
         "serial": random_serial(),
         "status": "pending",
         "qr_content": build_fake_qris(amount_str, invoice_number),
+        "print_mode": mode,
     }
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--amount", type=float, default=250000.00)
+    parser.add_argument("--mode", type=int, choices=[0, 1, 2], default=2, help="0=raw, 1=receipt, 2=qris")
     args = parser.parse_args()
 
     topic = f"topic-notif-{DEVICE_IMEI}"
-    payload = build_payload(args.amount)
+    payload = build_payload(args.amount, args.mode)
 
     publish.single(topic, json.dumps(payload), hostname=BROKER_HOST, port=BROKER_PORT)
     print(f"published to {topic}: {payload}")
